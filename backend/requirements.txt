@@ -1,0 +1,12 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+sqlalchemy>=2.0.25
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+openai>=1.12.0
+tenacity>=8.2.3
+python-dotenv>=1.0.1
+requests>=2.31.0
+langchain-core>=0.1.20
+openpyxl>=3.1.2
+python-multipart>=0.0.9
