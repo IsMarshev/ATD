@@ -2,13 +2,17 @@
 
 import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
+
 import { StatusPill } from "@/components/status-pill";
-import { models, projects, testCaseGroups, testTypes } from "@/data/mockData";
+import { createGeneration, uploadDatapool } from "@/lib/api";
+import type { Datapool, GenerationSummary, TestCaseDetail } from "@/lib/types";
 import { formatDateTime } from "@/lib/time";
+import { models, projects, testTypes } from "@/data/mockData";
 
 const defaultSelectedTypes = new Set(["Регрессия", "Негативные"]);
 
 export default function GeneratePage() {
+  const [title, setTitle] = useState("Новый тест-кейс");
   const [selectedProject, setSelectedProject] = useState(projects[0]);
   const [selectedModel, setSelectedModel] = useState(models[0]);
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(defaultSelectedTypes);
@@ -18,6 +22,16 @@ export default function GeneratePage() {
     nonFunctional: true,
     timeTravel: true,
   });
+  const [description, setDescription] = useState("");
+  const [datapool, setDatapool] = useState<Datapool | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const [generationResult, setGenerationResult] = useState<GenerationSummary | null>(null);
+  const [primaryCase, setPrimaryCase] = useState<TestCaseDetail | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const summary = useMemo(() => {
@@ -27,7 +41,7 @@ export default function GeneratePage() {
       coverageGoal: autoRerun ? 90 : 80,
       guardsEnabled: Object.values(guardrails).filter(Boolean).length,
     };
-  }, [selectedTypes.size, autoRerun, guardrails]);
+  }, [selectedTypes, autoRerun, guardrails]);
 
   function toggleTestType(type: string) {
     setSelectedTypes((prev) => {
@@ -39,6 +53,59 @@ export default function GeneratePage() {
       }
       return next;
     });
+  }
+
+  async function handleFileSelection(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadError(null);
+    try {
+      const uploaded = await uploadDatapool(file, description || undefined);
+      setDatapool(uploaded);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Не удалось загрузить датапул");
+    } finally {
+      setIsUploading(false);
+    }
+  }
+
+  async function handleGenerate() {
+    if (!title.trim()) {
+      setGenerateError("Укажите название тест-кейса");
+      return;
+    }
+    if (selectedTypes.size === 0) {
+      setGenerateError("Выберите хотя бы один тип сценария");
+      return;
+    }
+
+    setIsGenerating(true);
+    setGenerateError(null);
+    try {
+      const { generation, primaryCase } = await createGeneration({
+        title: title.trim(),
+        project: selectedProject,
+        modelName: selectedModel,
+        datapoolId: datapool?.id ?? null,
+        description: description.trim() || null,
+        testTypes: Array.from(selectedTypes),
+        guardrails,
+        autoRerun,
+        coverageTarget: summary.coverageGoal,
+        tags: Array.from(selectedTypes).map((item) => item.toLowerCase()),
+      });
+      setGenerationResult(generation);
+      setPrimaryCase(primaryCase);
+      setTitle(`Новый сценарий ${generation.reference}`);
+    } catch (err) {
+      setGenerateError(err instanceof Error ? err.message : "Генерация завершилась ошибкой");
+    } finally {
+      setIsGenerating(false);
+    }
   }
 
   return (
@@ -62,19 +129,30 @@ export default function GeneratePage() {
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="rounded-full border border-slate-300 px-3 py-1.5 text-slate-700 hover:bg-slate-100"
+                  disabled={isUploading}
+                  className="rounded-full border border-slate-300 px-3 py-1.5 text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Загрузить файл
+                  {isUploading ? "Загрузка…" : "Загрузить файл"}
                 </button>
                 <button
                   type="button"
-                  className="rounded-full border border-slate-300 px-3 py-1.5 text-slate-700 hover:bg-slate-100"
+                  className="cursor-not-allowed rounded-full border border-slate-300 px-3 py-1.5 text-slate-400"
+                  title="Поддержка URL в разработке"
                 >
                   Добавить URL
                 </button>
               </div>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
+              <label className="flex flex-col gap-1 text-xs text-slate-500">
+                <span>Название кейса</span>
+                <input
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 focus:border-slate-500"
+                  placeholder="Опишите основную цель сценария"
+                />
+              </label>
               <label className="flex flex-col gap-1 text-xs text-slate-500">
                 <span>Проект</span>
                 <select
@@ -89,15 +167,26 @@ export default function GeneratePage() {
                   ))}
                 </select>
               </label>
-              <label className="flex flex-col gap-1 text-xs text-slate-500">
+              <label className="flex flex-col gap-1 text-xs text-slate-500 sm:col-span-2">
                 <span>Описание датапула</span>
                 <input
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
                   placeholder="billing-grace-window.json"
                   className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 focus:border-slate-500"
                 />
               </label>
             </div>
-            <input ref={fileInputRef} type="file" className="hidden" multiple />
+            <input ref={fileInputRef} type="file" className="hidden" multiple={false} onChange={handleFileSelection} />
+            {uploadError ? (
+              <p className="text-xs text-rose-600">{uploadError}</p>
+            ) : null}
+            {datapool ? (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">
+                <p className="font-semibold">{datapool.originalFilename}</p>
+                <p>Размер: {(datapool.sizeBytes / 1024).toFixed(1)} КБ • Загрузили {formatDateTime(datapool.uploadedAt)}</p>
+              </div>
+            ) : null}
           </div>
 
           <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6">
@@ -127,6 +216,10 @@ export default function GeneratePage() {
           </div>
 
           <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6">
+            <div className="space-y-1">
+              <h2 className="text-lg font-semibold text-slate-900">Выбор модели и проверок</h2>
+              <p className="text-xs text-slate-500">Настройте эвристики перед запуском генерации.</p>
+            </div>
             <div className="grid gap-4 md:grid-cols-2">
               {models.map((model) => {
                 const active = selectedModel === model;
@@ -196,18 +289,21 @@ export default function GeneratePage() {
             <SummaryItem label="Оценка шагов" value={`~${summary.estimatedSteps}`} />
             <SummaryItem label="Целевое покрытие" value={`${summary.coverageGoal}%`} />
             <SummaryItem label="Активных правил" value={`${summary.guardsEnabled}`} />
+            {datapool ? <SummaryItem label="Датапул" value={datapool.originalFilename} /> : null}
           </div>
-          <div className="space-y-2 text-xs text-slate-500">
-            <p>Автоматическая проверка:</p>
-            <StatusPill status="completed" />
-          </div>
-          <button className="w-full rounded-full bg-slate-900 py-2.5 text-sm font-semibold text-white hover:bg-slate-700">
-            Запустить генерацию
+          {generateError ? <p className="text-xs text-rose-600">{generateError}</p> : null}
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={isGenerating}
+            className="w-full rounded-full bg-slate-900 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isGenerating ? "Запуск…" : "Запустить генерацию"}
           </button>
-          <button className="w-full rounded-full border border-slate-300 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-100">
+          <button className="w-full rounded-full border border-slate-300 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100">
             Загрузить сохранённый кейс
           </button>
-          <GeneratedGroupPreview />
+          <GeneratedGroupPreview generation={generationResult} testCase={primaryCase} />
         </aside>
       </section>
     </div>
@@ -250,9 +346,14 @@ function SummaryItem({ label, value }: { label: string; value: string }) {
   );
 }
 
-function GeneratedGroupPreview() {
-  const group = testCaseGroups[0];
-  if (!group) {
+function GeneratedGroupPreview({
+  generation,
+  testCase,
+}: {
+  generation: GenerationSummary | null;
+  testCase: TestCaseDetail | null;
+}) {
+  if (!generation || !testCase) {
     return null;
   }
 
@@ -261,22 +362,25 @@ function GeneratedGroupPreview() {
       <div className="flex items-center justify-between">
         <div>
           <p className="uppercase tracking-wide text-slate-500">Группа</p>
-          <p className="text-sm font-semibold text-slate-800">{group.title}</p>
+          <p className="text-sm font-semibold text-slate-800">{generation.title}</p>
         </div>
-        <StatusPill status={group.status} />
+        <StatusPill status={generation.status} />
       </div>
-      <p>Проект: {group.project}</p>
-      <p>Сгенерировано: {formatDateTime(group.createdAt)}</p>
+      <p>Проект: {generation.project}</p>
+      <p>Сгенерировано: {formatDateTime(generation.createdAt)}</p>
       <ul className="mt-2 space-y-1">
-        {group.cases.map((item) => (
+        {generation.cases.map((item) => (
           <li key={item.id} className="flex items-center justify-between">
             <Link href={`/editor?id=${item.id}`} className="font-semibold text-slate-800 hover:underline">
-              {item.id}
+              {item.reference}
             </Link>
             <span className="text-slate-500">{item.status}</span>
           </li>
         ))}
       </ul>
+      <p className="text-xs text-slate-500">
+        Основной кейс: <Link href={`/editor?id=${testCase.id}`} className="text-slate-700 hover:underline">{testCase.reference}</Link>
+      </p>
     </div>
   );
 }

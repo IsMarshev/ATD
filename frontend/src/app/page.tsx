@@ -1,18 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
 import { StatusPill } from "@/components/status-pill";
-import {
-  generationHistory,
-  models,
-  projects,
-  statusOptions,
-  testCaseGroups,
-} from "@/data/mockData";
+import { fetchGenerations } from "@/lib/api";
+import type { GenerationSummary } from "@/lib/types";
 import { formatDateTime, formatRelative } from "@/lib/time";
 
-type HistoryRecord = (typeof generationHistory)[number];
+const STATUS_FILTERS = ["all", "completed", "in-progress", "failed", "pending"] as const;
+
+type StatusFilter = (typeof STATUS_FILTERS)[number];
 
 type Stats = {
   lastCreatedAt: string | null;
@@ -23,42 +21,79 @@ type Stats = {
 };
 
 export default function DashboardPage() {
+  const [generations, setGenerations] = useState<GenerationSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
   const [projectFilter, setProjectFilter] = useState("all");
   const [modelFilter, setModelFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [search, setSearch] = useState("");
 
-  const historyIndex = useMemo(
-    () => new Map<string, HistoryRecord>(generationHistory.map((record) => [record.id, record])),
-    [],
-  );
+  useEffect(() => {
+    let cancelled = false;
 
-  const filteredGroups = useMemo(() => {
+    async function load() {
+      try {
+        const data = await fetchGenerations();
+        if (!cancelled) {
+          setGenerations(data);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Не удалось загрузить данные");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const projectOptions = useMemo(() => {
+    const values = new Set<string>();
+    generations.forEach((generation) => values.add(generation.project));
+    return ["all", ...Array.from(values)];
+  }, [generations]);
+
+  const modelOptions = useMemo(() => {
+    const values = new Set<string>();
+    generations.forEach((generation) => values.add(generation.modelName));
+    return ["all", ...Array.from(values)];
+  }, [generations]);
+
+  const filteredGenerations = useMemo(() => {
     const searchValue = search.trim().toLowerCase();
-    return testCaseGroups.filter((group) => {
-      const matchesProject = projectFilter === "all" || group.project === projectFilter;
-      const matchesModel = modelFilter === "all" || group.model === modelFilter;
+
+    return generations.filter((generation) => {
+      const matchesProject = projectFilter === "all" || generation.project === projectFilter;
+      const matchesModel = modelFilter === "all" || generation.modelName === modelFilter;
       const matchesStatus =
         statusFilter === "all" ||
-        group.status === statusFilter ||
-        group.cases.some((testCase) => testCase.status === statusFilter);
+        generation.status === statusFilter ||
+        generation.cases.some((testCase) => testCase.status === statusFilter);
+
       const matchesSearch =
         searchValue.length === 0 ||
-        group.title.toLowerCase().includes(searchValue) ||
-        group.id.toLowerCase().includes(searchValue) ||
-        group.cases.some(
-          (testCase) =>
-            testCase.id.toLowerCase().includes(searchValue) ||
-            testCase.title.toLowerCase().includes(searchValue),
+        generation.title.toLowerCase().includes(searchValue) ||
+        generation.reference.toLowerCase().includes(searchValue) ||
+        generation.cases.some((testCase) =>
+          testCase.reference.toLowerCase().includes(searchValue) ||
+          testCase.title.toLowerCase().includes(searchValue),
         );
+
       return matchesProject && matchesModel && matchesStatus && matchesSearch;
     });
-  }, [projectFilter, modelFilter, statusFilter, search]);
+  }, [generations, projectFilter, modelFilter, statusFilter, search]);
 
-  const stats = useMemo<Stats>(
-    () => calculateStats(filteredGroups, historyIndex),
-    [filteredGroups, historyIndex],
-  );
+  const stats = useMemo<Stats>(() => calculateStats(filteredGenerations), [filteredGenerations]);
 
   return (
     <div className="space-y-8">
@@ -69,14 +104,14 @@ export default function DashboardPage() {
             Кейсы сгруппированы по запуску генерации — выберите проект, модель и откройте нужный сценарий.
           </p>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 text-sm text-slate-600">
+        <div className="grid gap-3 text-sm text-slate-600 sm:grid-cols-2 lg:grid-cols-5">
           <SummaryTile
             label="Последний запуск"
             value={stats.lastCreatedAt ? formatRelative(stats.lastCreatedAt) : "—"}
           />
           <SummaryTile label="Группы" value={`${stats.groupsCount}`} />
           <SummaryTile label="Кейсы" value={`${stats.casesCount}`} />
-          <SummaryTile label="Среднее покрытие" value={`${stats.coverage}%`} />
+          <SummaryTile label="Среднее покрытие" value={stats.coverage ? `${stats.coverage}%` : "—"} />
           <SummaryTile label="Автоповторы" value={`${stats.autoReruns}`} />
         </div>
       </section>
@@ -88,19 +123,14 @@ export default function DashboardPage() {
             label="Проект"
             value={projectFilter}
             onChange={setProjectFilter}
-            options={["all", ...projects]}
+            options={projectOptions}
           />
-          <FilterSelect
-            label="Модель"
-            value={modelFilter}
-            onChange={setModelFilter}
-            options={["all", ...models]}
-          />
+          <FilterSelect label="Модель" value={modelFilter} onChange={setModelFilter} options={modelOptions} />
           <FilterSelect
             label="Статус"
             value={statusFilter}
-            onChange={setStatusFilter}
-            options={["all", ...statusOptions]}
+            onChange={(value) => setStatusFilter(value as StatusFilter)}
+            options={STATUS_FILTERS}
           />
         </div>
       </section>
@@ -108,36 +138,40 @@ export default function DashboardPage() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-slate-900">Группы генераций</h2>
-          <span className="text-xs text-slate-500">{filteredGroups.length} групп по фильтрам</span>
+          <span className="text-xs text-slate-500">
+            {loading ? "загрузка..." : `${filteredGenerations.length} групп по фильтрам`}
+          </span>
         </div>
-        {filteredGroups.length === 0 ? (
+
+        {error ? (
+          <p className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</p>
+        ) : null}
+
+        {!error && loading ? (
+          <p className="rounded-2xl border border-dashed border-slate-200 bg-white p-4 text-sm text-slate-500">
+            Загружаем данные о генерациях…
+          </p>
+        ) : null}
+
+        {!loading && !error && filteredGenerations.length === 0 ? (
           <p className="rounded-2xl border border-dashed border-slate-200 bg-white p-4 text-sm text-slate-500">
             По выбранным условиям групп не найдено. Измените параметры фильтрации.
           </p>
-        ) : (
-          <div className="grid gap-3 md:grid-cols-2">
-            {filteredGroups.map((group) => (
-              <GroupCard key={group.id} group={group} />
-            ))}
-          </div>
-        )}
+        ) : null}
+
+        <div className="grid gap-3 md:grid-cols-2">
+          {filteredGenerations.map((group) => (
+            <GroupCard key={group.id} group={group} />
+          ))}
+        </div>
       </section>
     </div>
   );
 }
 
-function calculateStats(
-  groups: typeof testCaseGroups,
-  historyIndex: Map<string, HistoryRecord>,
-): Stats {
+function calculateStats(groups: GenerationSummary[]): Stats {
   if (groups.length === 0) {
-    return {
-      lastCreatedAt: null,
-      autoReruns: 0,
-      coverage: 0,
-      groupsCount: 0,
-      casesCount: 0,
-    };
+    return { lastCreatedAt: null, autoReruns: 0, coverage: 0, groupsCount: 0, casesCount: 0 };
   }
 
   let latest = 0;
@@ -153,18 +187,12 @@ function calculateStats(
     }
     group.cases.forEach((testCase) => {
       casesCount += 1;
-      const record = historyIndex.get(testCase.id);
-      if (record) {
-        autoReruns += record.autoReruns;
-        if (record.coverage > 0) {
-          coverageSum += record.coverage;
-          coverageCount += 1;
-        }
-      } else if (testCase.coverage > 0) {
+      if (testCase.coverage > 0) {
         coverageSum += testCase.coverage;
         coverageCount += 1;
       }
     });
+    autoReruns += group.autoReruns;
   });
 
   return {
@@ -234,7 +262,7 @@ function SummaryTile({ label, value }: { label: string; value: string }) {
   );
 }
 
-function GroupCard({ group }: { group: (typeof testCaseGroups)[number] }) {
+function GroupCard({ group }: { group: GenerationSummary }) {
   return (
     <article className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
       <div className="flex items-center justify-between">
@@ -244,7 +272,7 @@ function GroupCard({ group }: { group: (typeof testCaseGroups)[number] }) {
         </div>
         <StatusPill status={group.status} />
       </div>
-      <p className="text-xs text-slate-500">Создано {formatDateTime(group.createdAt)} • {group.model}</p>
+      <p className="text-xs text-slate-500">Создано {formatDateTime(group.createdAt)} • {group.modelName}</p>
       <ul className="space-y-2 text-xs">
         {group.cases.map((testCase) => (
           <li
@@ -253,7 +281,7 @@ function GroupCard({ group }: { group: (typeof testCaseGroups)[number] }) {
           >
             <div className="flex flex-col">
               <Link href={`/editor?id=${testCase.id}`} className="font-semibold text-slate-800 hover:underline">
-                {testCase.id}
+                {testCase.reference}
               </Link>
               <span className="text-slate-500">{testCase.title}</span>
             </div>
