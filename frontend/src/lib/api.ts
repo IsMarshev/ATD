@@ -1,107 +1,19 @@
 import { API_BASE_URL } from "./config";
-import {
-  ChatMessage,
-  Datapool,
-  ExportRecord,
-  ExportRequestPayload,
-  GenerationCreatePayload,
-  GenerationSummary,
-  TestCaseDetail,
+import type {
+  ContextBundle,
+  DocumentReference,
+  DocumentUpload,
+  GenerateTestCasePayload,
+  StepPatchPayload,
+  TestCase,
+  TestCaseList,
+  TestCaseRevision,
   TestCaseStep,
-  TestCaseSummary,
-  StepUpdate,
 } from "./types";
 
 const JSON_HEADERS = {
   Accept: "application/json",
   "Content-Type": "application/json",
-};
-
-type ApiGenerationSummary = {
-  id: string;
-  reference: string;
-  title: string;
-  project: string;
-  model_name: string;
-  status: string;
-  created_at: string;
-  auto_rerun_enabled: boolean;
-  auto_reruns: number;
-  coverage_target: number;
-  guardrails: Record<string, boolean>;
-  test_types: string[];
-  last_error: string | null;
-  cases: ApiTestCaseSummary[];
-};
-
-type ApiTestCaseSummary = {
-  id: string;
-  generation_id: string;
-  reference: string;
-  title: string;
-  status: string;
-  coverage: number;
-  project: string;
-  model_name: string;
-  auto_reruns: number;
-  regeneration_count: number;
-  generated_at: string;
-};
-
-type ApiRequirementCoverage = {
-  id: string;
-  title: string;
-  coverage: number;
-};
-
-type ApiTestCaseStep = {
-  id: string;
-  position: number;
-  action: string;
-  data: string;
-  expected: string;
-  rule_hits: string[];
-  status: string;
-};
-
-type ApiChatMessage = {
-  id: string;
-  author: string;
-  role: string;
-  message: string;
-  timestamp: string;
-};
-
-type ApiExportRecord = {
-  id: string;
-  channel: string;
-  status: string;
-  details: string | null;
-  created_at: string;
-  location: string | null;
-};
-
-type ApiTestCaseDetail = ApiTestCaseSummary & {
-  requirement_coverage: ApiRequirementCoverage[];
-  metadata: Record<string, unknown>;
-  tags: string[];
-  steps: ApiTestCaseStep[];
-  chat_messages: ApiChatMessage[];
-  exports: ApiExportRecord[];
-};
-
-type ApiDatapool = {
-  id: string;
-  original_filename: string;
-  description: string | null;
-  content_type: string | null;
-  size_bytes: number;
-  uploaded_at: string;
-};
-
-type ApiGenerationCreateResponse = {
-  generation: ApiGenerationSummary;
-  primary_case: ApiTestCaseDetail;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -131,237 +43,242 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-function mapTestCaseSummary(payload: ApiTestCaseSummary): TestCaseSummary {
-  return {
-    id: payload.id,
-    generationId: payload.generation_id,
-    reference: payload.reference,
-    title: payload.title,
-    status: payload.status as TestCaseSummary["status"],
-    coverage: payload.coverage,
-    project: payload.project,
-    modelName: payload.model_name,
-    autoReruns: payload.auto_reruns,
-    regenerationCount: payload.regeneration_count,
-    generatedAt: payload.generated_at,
-  };
-}
+type ApiStep = {
+  id: string;
+  order_index: number;
+  action: string;
+  expected_result: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string | null;
+};
 
-function mapTestCaseStep(payload: ApiTestCaseStep): TestCaseStep {
+type ApiRevision = {
+  id: string;
+  version: number;
+  summary: string | null;
+  changes: Record<string, unknown>;
+  created_at: string;
+};
+
+type ApiTestCase = {
+  id: string;
+  number: string;
+  title: string;
+  summary: string | null;
+  author: string | null;
+  precondition: string | null;
+  postcondition: string | null;
+  status: "draft" | "active" | "archived";
+  requirement_context: Record<string, unknown> | null;
+  source_urls: string[];
+  version: number;
+  latest_generation_summary: string | null;
+  steps: ApiStep[];
+  revisions: ApiRevision[];
+  created_at: string;
+  updated_at: string | null;
+};
+
+type ApiTestCaseList = {
+  items: ApiTestCase[];
+  total: number;
+};
+
+type ApiDocumentUpload = {
+  id: string;
+  name: string;
+  mime_type: string | null;
+  path: string;
+  text: string | null;
+};
+
+function mapStep(payload: ApiStep): TestCaseStep {
   return {
     id: payload.id,
-    position: payload.position,
+    orderIndex: payload.order_index,
     action: payload.action,
-    data: payload.data,
-    expected: payload.expected,
-    ruleHits: payload.rule_hits,
-    status: payload.status as TestCaseStep["status"],
+    expectedResult: payload.expected_result,
+    notes: payload.notes,
+    createdAt: payload.created_at,
+    updatedAt: payload.updated_at,
   };
 }
 
-function mapChatMessage(payload: ApiChatMessage): ChatMessage {
+function mapRevision(payload: ApiRevision): TestCaseRevision {
   return {
     id: payload.id,
+    version: payload.version,
+    summary: payload.summary,
+    changes: payload.changes,
+    createdAt: payload.created_at,
+  };
+}
+
+function mapTestCase(payload: ApiTestCase): TestCase {
+  return {
+    id: payload.id,
+    number: payload.number,
+    title: payload.title,
+    summary: payload.summary,
     author: payload.author,
-    role: payload.role as ChatMessage["role"],
-    message: payload.message,
-    timestamp: payload.timestamp,
-  };
-}
-
-function mapExportRecord(payload: ApiExportRecord): ExportRecord {
-  return {
-    id: payload.id,
-    channel: payload.channel as ExportRecord["channel"],
-    status: payload.status as ExportRecord["status"],
-    details: payload.details,
+    precondition: payload.precondition,
+    postcondition: payload.postcondition,
+    status: payload.status,
+    requirementContext: payload.requirement_context,
+    sourceUrls: payload.source_urls,
+    version: payload.version,
+    latestGenerationSummary: payload.latest_generation_summary,
+    steps: payload.steps.map(mapStep),
+    revisions: payload.revisions.map(mapRevision),
     createdAt: payload.created_at,
-    location: payload.location,
+    updatedAt: payload.updated_at,
   };
 }
 
-function mapTestCaseDetail(payload: ApiTestCaseDetail): TestCaseDetail {
-  const summary = mapTestCaseSummary(payload);
-  return {
-    ...summary,
-    requirementCoverage: payload.requirement_coverage.map((item) => ({
-      id: item.id,
-      title: item.title,
-      coverage: item.coverage,
-    })),
-    metadata: payload.metadata ?? {},
-    tags: payload.tags,
-    steps: payload.steps.sort((a, b) => a.position - b.position).map(mapTestCaseStep),
-    chatMessages: payload.chat_messages.map(mapChatMessage),
-    exports: payload.exports.map(mapExportRecord),
-  };
-}
-
-function mapGenerationSummary(payload: ApiGenerationSummary): GenerationSummary {
+function mapDocument(payload: ApiDocumentUpload): DocumentUpload {
   return {
     id: payload.id,
-    reference: payload.reference,
-    title: payload.title,
-    project: payload.project,
-    modelName: payload.model_name,
-    status: payload.status as GenerationSummary["status"],
-    createdAt: payload.created_at,
-    autoRerunEnabled: payload.auto_rerun_enabled,
-    autoReruns: payload.auto_reruns,
-    coverageTarget: payload.coverage_target,
-    guardrails: payload.guardrails,
-    testTypes: payload.test_types,
-    lastError: payload.last_error,
-    cases: payload.cases.map(mapTestCaseSummary),
+    name: payload.name,
+    mimeType: payload.mime_type,
+    path: payload.path,
+    text: payload.text,
   };
 }
 
-function mapDatapool(payload: ApiDatapool): Datapool {
+function serializeContext(context: ContextBundle): Record<string, unknown> {
   return {
-    id: payload.id,
-    originalFilename: payload.original_filename,
-    description: payload.description,
-    contentType: payload.content_type,
-    sizeBytes: payload.size_bytes,
-    uploadedAt: payload.uploaded_at,
+    functional_requirements: context.functionalRequirements ?? [],
+    functional_scenarios: context.functionalScenarios ?? [],
+    user_scenarios: context.userScenarios ?? [],
+    product_specs: context.productSpecs ?? [],
+    acceptance_criteria: context.acceptanceCriteria ?? [],
+    technical_constraints: context.technicalConstraints ?? [],
+    urls: context.urls ?? [],
+    raw_context: context.rawContext ?? [],
   };
 }
 
-export async function fetchGenerations(): Promise<GenerationSummary[]> {
-  const payload = await request<ApiGenerationSummary[]>("/generations");
-  return payload.map(mapGenerationSummary);
+function serializeDocument(document: DocumentReference): Record<string, unknown> {
+  return {
+    name: document.name,
+    source_type: document.sourceType ?? "upload",
+    text: document.text,
+    url: document.url,
+    file_id: document.fileId,
+    mime_type: document.mimeType,
+  };
 }
 
-export async function fetchGeneration(id: string): Promise<GenerationSummary> {
-  const payload = await request<ApiGenerationSummary>(`/generations/${id}`);
-  return mapGenerationSummary(payload);
+export async function listTestCases(): Promise<TestCaseList> {
+  const payload = await request<ApiTestCaseList>("/test-cases");
+  return {
+    items: payload.items.map(mapTestCase),
+    total: payload.total,
+  };
 }
 
-export async function createGeneration(
-  payload: GenerationCreatePayload,
-): Promise<{ generation: GenerationSummary; primaryCase: TestCaseDetail }> {
+export async function fetchTestCase(testCaseId: string): Promise<TestCase> {
+  const payload = await request<ApiTestCase>(`/test-cases/${testCaseId}`);
+  return mapTestCase(payload);
+}
+
+export async function uploadDocument(file: File): Promise<DocumentUpload> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const payload = await request<ApiDocumentUpload>("/documents/upload", {
+    method: "POST",
+    body: formData,
+  });
+  return mapDocument(payload);
+}
+
+export async function generateTestCase(payload: GenerateTestCasePayload): Promise<TestCase> {
   const body = {
-    title: payload.title,
-    project: payload.project,
-    model_name: payload.modelName,
-    datapool_id: payload.datapoolId ?? null,
-    description: payload.description ?? null,
-    test_types: payload.testTypes,
-    guardrails: payload.guardrails,
-    auto_rerun: payload.autoRerun,
-    coverage_target: payload.coverageTarget ?? null,
-    tags: payload.tags ?? [],
+    requested_title: payload.requestedTitle ?? null,
+    objective: payload.objective ?? null,
+    author: payload.author ?? null,
+    context: serializeContext(payload.context),
+    documents: payload.documents.map(serializeDocument),
+    datapool_hints: [],
   };
-
-  const response = await request<ApiGenerationCreateResponse>("/generations", {
+  const response = await request<ApiTestCase>("/test-cases/generate", {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
   });
-
-  return {
-    generation: mapGenerationSummary(response.generation),
-    primaryCase: mapTestCaseDetail(response.primary_case),
-  };
+  return mapTestCase(response);
 }
 
-export async function fetchTestCase(testCaseId: string): Promise<TestCaseDetail> {
-  const payload = await request<ApiTestCaseDetail>(`/test-cases/${testCaseId}`);
-  return mapTestCaseDetail(payload);
-}
-
-export async function fetchTestCaseByReference(reference: string): Promise<TestCaseDetail> {
-  const payload = await request<ApiTestCaseDetail>(`/test-cases/by-reference/${reference}`);
-  return mapTestCaseDetail(payload);
-}
-
-export async function listTestCases(): Promise<TestCaseSummary[]> {
-  const payload = await request<ApiTestCaseSummary[]>("/test-cases");
-  return payload.map(mapTestCaseSummary);
-}
-
-export async function updateTestCaseSteps(
+export async function updateTestCase(
   testCaseId: string,
-  updates: StepUpdate[],
-): Promise<TestCaseDetail> {
+  payload: Partial<Pick<TestCase, "title" | "summary" | "author" | "precondition" | "postcondition" | "status">>,
+): Promise<TestCase> {
   const body = {
-    steps: updates.map((step) => ({
-      id: step.id,
-      action: step.action,
-      data: step.data,
-      expected: step.expected,
-      status: step.status,
-    })),
+    title: payload.title ?? null,
+    summary: payload.summary ?? null,
+    author: payload.author ?? null,
+    precondition: payload.precondition ?? null,
+    postcondition: payload.postcondition ?? null,
+    status: payload.status ?? null,
   };
-
-  const payload = await request<ApiTestCaseDetail>(`/test-cases/${testCaseId}/steps`, {
+  const response = await request<ApiTestCase>(`/test-cases/${testCaseId}`, {
     method: "PATCH",
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
   });
-
-  return mapTestCaseDetail(payload);
+  return mapTestCase(response);
 }
+
+export async function updateTestCaseStep(
+  testCaseId: string,
+  stepId: string,
+  payload: StepPatchPayload,
+): Promise<TestCase> {
+  const body = {
+    action: payload.action,
+    expected_result: payload.expectedResult,
+    notes: payload.notes,
+    order_index: payload.orderIndex,
+  };
+  const response = await request<ApiTestCase>(`/test-cases/${testCaseId}/steps/${stepId}`, {
+    method: "PATCH",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+  return mapTestCase(response);
+}
+
+type DiffRequest = {
+  context: ContextBundle;
+  documents?: DocumentReference[];
+  existingSteps: TestCaseStep[];
+};
 
 export async function regenerateTestCase(
   testCaseId: string,
-  options: { reason?: string; autoRerun?: boolean } = {},
-): Promise<TestCaseDetail> {
+  payload: DiffRequest,
+): Promise<TestCase> {
   const body = {
-    reason: options.reason ?? null,
-    auto_rerun: options.autoRerun ?? true,
+    test_case_id: testCaseId,
+    context: serializeContext(payload.context),
+    documents: (payload.documents ?? []).map(serializeDocument),
+    existing_steps: payload.existingSteps.map((step) => ({
+      order_index: step.orderIndex,
+      action: step.action,
+      expected_result: step.expectedResult,
+      notes: step.notes,
+    })),
   };
-
-  const payload = await request<{ test_case: ApiTestCaseDetail }>(`/test-cases/${testCaseId}/regenerate`, {
+  const response = await request<ApiTestCase>(`/test-cases/${testCaseId}/diff`, {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
   });
-
-  return mapTestCaseDetail(payload.test_case);
+  return mapTestCase(response);
 }
 
-export async function createExport(
-  testCaseId: string,
-  payload: ExportRequestPayload,
-): Promise<ExportRecord> {
-  const body = {
-    channel: payload.channel,
-    include_datapool: payload.includeDatapool ?? true,
-    notes: payload.notes ?? null,
-    file_name: payload.fileName ?? null,
-  };
-
-  const response = await request<ApiExportRecord>(`/test-cases/${testCaseId}/exports`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(body),
-  });
-
-  return mapExportRecord(response);
-}
-
-export async function fetchExportHistory(testCaseId: string): Promise<ExportRecord[]> {
-  const payload = await request<ApiExportRecord[]>(`/test-cases/${testCaseId}/exports`);
-  return payload.map(mapExportRecord);
-}
-
-export async function uploadDatapool(file: File, description?: string): Promise<Datapool> {
-  const formData = new FormData();
-  formData.append("file", file);
-  if (description) {
-    formData.append("description", description);
-  }
-
-  const payload = await request<ApiDatapool>("/datapools", {
-    method: "POST",
-    body: formData,
-  });
-
-  return mapDatapool(payload);
-}
-
-export async function listDatapools(): Promise<Datapool[]> {
-  const payload = await request<ApiDatapool[]>("/datapools");
-  return payload.map(mapDatapool);
+export function buildExportUrl(testCaseId: string, format: "excel" | "csv" | "adaptavist" | "zephyr" = "excel"): string {
+  const search = new URLSearchParams({ format });
+  return `${API_BASE_URL}/test-cases/${testCaseId}/export?${search.toString()}`;
 }

@@ -5,16 +5,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 import { StatusPill } from "@/components/status-pill";
-import { fetchGeneration, fetchTestCase, regenerateTestCase, updateTestCaseSteps } from "@/lib/api";
-import type { GenerationSummary, TestCaseDetail, TestCaseStep } from "@/lib/types";
+import { fetchTestCase, regenerateTestCase, updateTestCaseStep } from "@/lib/api";
+import type { ContextBundle, TestCase, TestCaseStep } from "@/lib/types";
 import { formatDateTime } from "@/lib/time";
 
 export default function CaseEditorPage() {
   const searchParams = useSearchParams();
   const testCaseId = searchParams.get("id");
 
-  const [testCase, setTestCase] = useState<TestCaseDetail | null>(null);
-  const [generation, setGeneration] = useState<GenerationSummary | null>(null);
+  const [testCase, setTestCase] = useState<TestCase | null>(null);
   const [steps, setSteps] = useState<TestCaseStep[]>([]);
   const [selectedStepId, setSelectedStepId] = useState<string>("");
   const [draftMessage, setDraftMessage] = useState("");
@@ -65,38 +64,17 @@ export default function CaseEditorPage() {
     };
   }, [testCaseId]);
 
-  useEffect(() => {
-    if (!testCase) {
-      return;
-    }
-
-    let cancelled = false;
-
-    fetchGeneration(testCase.generationId)
-      .then((run) => {
-        if (!cancelled) {
-          setGeneration(run);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setGeneration(null);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [testCase]);
-
-  function updateStep(id: string, field: keyof Pick<TestCaseStep, "action" | "data" | "expected">, value: string) {
+  function updateStep(
+    id: string,
+    field: keyof Pick<TestCaseStep, "action" | "expectedResult" | "notes">,
+    value: string,
+  ) {
     setSteps((prev) =>
       prev.map((step) =>
         step.id === id
           ? {
               ...step,
               [field]: value,
-              status: field !== "status" && step.status === "ready" ? "edited" : step.status,
             }
           : step,
       ),
@@ -113,14 +91,25 @@ export default function CaseEditorPage() {
       }
       if (
         original.action !== step.action ||
-        original.data !== step.data ||
-        original.expected !== step.expected ||
-        original.status !== step.status
+        (original.expectedResult ?? "") !== (step.expectedResult ?? "") ||
+        (original.notes ?? "") !== (step.notes ?? "") ||
+        original.orderIndex !== step.orderIndex
       ) {
         updates.push(step);
       }
     });
     return updates;
+  }
+
+  async function reloadTestCase() {
+    if (!testCaseId) {
+      return;
+    }
+    const detail = await fetchTestCase(testCaseId);
+    setTestCase(detail);
+    setSteps(detail.steps);
+    originalSteps.current = new Map(detail.steps.map((step) => [step.id, step]));
+    setSelectedStepId((prev) => (detail.steps.some((step) => step.id === prev) ? prev : detail.steps[0]?.id ?? ""));
   }
 
   async function handleSave() {
@@ -137,19 +126,17 @@ export default function CaseEditorPage() {
     setNotification(null);
     setError(null);
     try {
-      const updated = await updateTestCaseSteps(
-        testCase.id,
-        modified.map((step) => ({
-          id: step.id,
-          action: step.action,
-          data: step.data,
-          expected: step.expected,
-          status: step.status,
-        })),
+      await Promise.all(
+        modified.map((step) =>
+          updateTestCaseStep(testCase.id, step.id, {
+            action: step.action,
+            expectedResult: step.expectedResult,
+            notes: step.notes,
+            orderIndex: step.orderIndex,
+          }),
+        ),
       );
-      setTestCase(updated);
-      setSteps(updated.steps);
-      originalSteps.current = new Map(updated.steps.map((step) => [step.id, step]));
+      await reloadTestCase();
       setNotification("Шаги обновлены");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Не удалось сохранить изменения");
@@ -166,9 +153,11 @@ export default function CaseEditorPage() {
     setNotification(null);
     setError(null);
     try {
+      const context = toContextBundle(testCase, draftMessage);
       const updated = await regenerateTestCase(testCase.id, {
-        reason: draftMessage || undefined,
-        autoRerun: true,
+        context,
+        documents: [],
+        existingSteps: steps,
       });
       setTestCase(updated);
       setSteps(updated.steps);
@@ -182,12 +171,10 @@ export default function CaseEditorPage() {
     }
   }
 
-  const relatedGroup = useMemo(() => {
-    if (!generation || !testCase) {
-      return null;
-    }
-    return generation;
-  }, [generation, testCase]);
+  const selectedStep = useMemo(
+    () => steps.find((step) => step.id === selectedStepId) ?? null,
+    [steps, selectedStepId],
+  );
 
   if (loading) {
     return (
@@ -212,208 +199,220 @@ export default function CaseEditorPage() {
   return (
     <div className="space-y-6">
       <header className="space-y-2">
-        <p className="text-xs uppercase tracking-wide text-slate-500">Редактор кейса</p>
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-semibold text-slate-900">{testCase.title}</h1>
+          <h1 className="text-3xl font-semibold text-slate-900">{testCase.title}</h1>
           <StatusPill status={testCase.status} />
         </div>
         <p className="text-sm text-slate-600">
-          Сгенерирован {formatDateTime(testCase.generatedAt)} • Модель {testCase.modelName} • Покрытие {testCase.coverage}%
+          Номер {testCase.number} • Версия {testCase.version} • Создан {formatDateTime(testCase.createdAt)}.
         </p>
         {notification ? <p className="text-xs text-emerald-600">{notification}</p> : null}
       </header>
 
-      <section className="flex flex-col gap-3 sm:flex-row sm:justify-end">
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={saving}
-          className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          Сохранить изменения
-        </button>
-        <button
-          type="button"
-          onClick={handleRegenerate}
-          disabled={saving}
-          className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          Перегенерировать
-        </button>
-      </section>
-
-      <section className="grid gap-6 lg:grid-cols-[1fr_2fr]">
-        <div className="space-y-4">
-          <ChatPanel history={testCase.chatMessages} draft={draftMessage} onDraftChange={setDraftMessage} />
-
-          {relatedGroup ? (
-            <section className="space-y-2 rounded-2xl border border-slate-200 bg-white p-4 text-xs text-slate-600">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="uppercase tracking-wide text-slate-500">Группа</p>
-                  <p className="text-sm font-semibold text-slate-800">{relatedGroup.title}</p>
-                </div>
-                <StatusPill status={relatedGroup.status} />
-              </div>
-              <p>Проект: {relatedGroup.project}</p>
-              <ul className="mt-2 space-y-1">
-                {relatedGroup.cases.map((caseItem) => (
-                  <li key={caseItem.id} className="flex items-center justify-between">
-                    <Link href={`/editor?id=${caseItem.id}`} className="font-semibold text-slate-800 hover:underline">
-                      {caseItem.reference}
-                    </Link>
-                    <span className="text-slate-500">{caseItem.status}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
-        </div>
-
-        <div className="space-y-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <table className="min-w-full text-left text-sm text-slate-700">
-              <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
-                <tr>
-                  <th className="px-3 py-2">№</th>
-                  <th className="px-3 py-2">Действие</th>
-                  <th className="px-3 py-2">Данные</th>
-                  <th className="px-3 py-2">Ожидание</th>
-                  <th className="px-3 py-2">Проверки</th>
-                </tr>
-              </thead>
-              <tbody>
-                {steps.map((step) => (
-                  <tr
-                    key={step.id}
-                    onClick={() => setSelectedStepId(step.id)}
-                    className={`border-b border-slate-100 align-top hover:bg-slate-50 ${selectedStepId === step.id ? "bg-slate-50" : ""}`}
-                  >
-                    <td className="px-3 py-3 text-xs text-slate-500">{step.position}</td>
-                    <td className="px-3 py-3">
-                      <Textarea
-                        value={step.action}
-                        onChange={(value) => updateStep(step.id, "action", value)}
-                        highlight={step.status === "edited"}
-                      />
-                    </td>
-                    <td className="px-3 py-3">
-                      <Textarea
-                        value={step.data}
-                        onChange={(value) => updateStep(step.id, "data", value)}
-                        monospace
-                      />
-                    </td>
-                    <td className="px-3 py-3">
-                      <Textarea
-                        value={step.expected}
-                        onChange={(value) => updateStep(step.id, "expected", value)}
-                      />
-                    </td>
-                    <td className="px-3 py-3">
-                      <RuleList rules={step.ruleHits ?? []} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <section className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
+        <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold text-slate-900">Шаги сценария</h2>
+            <div className="flex gap-2 text-xs">
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={saving}
+                className="rounded-full border border-slate-300 px-3 py-1.5 text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {saving ? "Сохраняем…" : "Сохранить"}
+              </button>
+              <button
+                type="button"
+                onClick={handleRegenerate}
+                disabled={saving}
+                className="rounded-full bg-slate-900 px-3 py-1.5 text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {saving ? "Работаем…" : "Перегенерировать"}
+              </button>
+            </div>
           </div>
 
-          <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
-            <h2 className="text-lg font-semibold text-slate-900">Покрытие требований</h2>
-            <ul className="space-y-2">
-              {testCase.requirementCoverage.map((requirement) => (
-                <li key={requirement.id} className="rounded-xl border border-slate-200 p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold text-slate-900">{requirement.id}</span>
-                    <span className="text-sm text-slate-600">{requirement.coverage}%</span>
-                  </div>
-                  <p className="text-xs text-slate-500">{requirement.title}</p>
-                </li>
-              ))}
-            </ul>
-          </section>
+          <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
+            <aside className="space-y-2 overflow-x-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+              {steps.length === 0 ? (
+                <p className="text-xs text-slate-500">Шаги отсутствуют.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {steps.map((step) => (
+                    <li key={step.id}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedStepId(step.id)}
+                        className={`flex w-full flex-col gap-1 rounded-xl border px-3 py-2 text-left transition ${
+                          step.id === selectedStepId ? "border-slate-400 bg-white" : "border-transparent hover:border-slate-300"
+                        }`}
+                      >
+                        <span className="text-xs font-semibold text-slate-500">Шаг {step.orderIndex}</span>
+                        <span className="line-clamp-2 text-sm text-slate-700">{step.action}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </aside>
+
+            <div className="space-y-4">
+              {selectedStep ? (
+                <StepEditor step={selectedStep} onChange={updateStep} />
+              ) : (
+                <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+                  Выберите шаг, чтобы отредактировать.
+                </p>
+              )}
+            </div>
+          </div>
         </div>
+
+        <aside className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-700">
+          <div className="space-y-2">
+            <h2 className="text-lg font-semibold text-slate-900">Контекст</h2>
+            <p className="text-xs text-slate-500">Освежите вводные данные перед перегенерацией.</p>
+          </div>
+          <ContextPreview context={testCase.requirementContext} />
+          <label className="flex flex-col gap-1 text-xs text-slate-500">
+            <span>Комментарий для модели</span>
+            <textarea
+              value={draftMessage}
+              onChange={(event) => setDraftMessage(event.target.value)}
+              rows={5}
+              placeholder="Что поменялось и что нужно учесть"
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:border-slate-500"
+            />
+          </label>
+          <div className="flex gap-2 text-xs">
+            <Link
+              href={`/changes?id=${testCase.id}`}
+              className="flex-1 rounded-full border border-slate-300 px-3 py-1.5 text-center text-slate-700 transition hover:bg-slate-100"
+            >
+              История изменений
+            </Link>
+            <Link
+              href={`/export?id=${testCase.id}`}
+              className="flex-1 rounded-full border border-slate-300 px-3 py-1.5 text-center text-slate-700 transition hover:bg-slate-100"
+            >
+              Экспорт
+            </Link>
+          </div>
+        </aside>
       </section>
     </div>
   );
 }
 
-function Textarea({
-  value,
+function StepEditor({
+  step,
   onChange,
-  highlight,
-  monospace,
 }: {
-  value: string;
-  onChange: (value: string) => void;
-  highlight?: boolean;
-  monospace?: boolean;
+  step: TestCaseStep;
+  onChange: (
+    id: string,
+    field: keyof Pick<TestCaseStep, "action" | "expectedResult" | "notes">,
+    value: string,
+  ) => void;
 }) {
   return (
-    <textarea
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      className={`min-h-[80px] w-full rounded-xl border border-slate-200 bg-white p-2 text-sm text-slate-700 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none ${
-        highlight ? "ring-1 ring-slate-400" : ""
-      } ${monospace ? "font-mono text-xs" : ""}`}
-    />
-  );
-}
-
-function RuleList({ rules }: { rules: string[] }) {
-  if (!rules || rules.length === 0) {
-    return <span className="text-xs text-emerald-600">Без нарушений</span>;
-  }
-  return (
-    <ul className="space-y-2 text-xs text-rose-600">
-      {rules.map((rule) => (
-        <li key={rule} className="rounded-lg border border-rose-200 bg-rose-50 p-2">
-          {rule}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function ChatPanel({
-  history,
-  draft,
-  onDraftChange,
-}: {
-  history: TestCaseDetail["chatMessages"];
-  draft: string;
-  onDraftChange: (text: string) => void;
-}) {
-  return (
-    <section className="flex h-full flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-slate-900">Чат с моделью</h2>
-        <span className="text-xs text-slate-500">{history.length} сообщений</span>
-      </div>
-      <div className="flex-1 space-y-3 overflow-y-auto rounded-xl border border-slate-100 bg-slate-50 p-3">
-        {history.map((message) => (
-          <article key={message.id} className="space-y-1 rounded-lg border border-slate-200 bg-white p-3">
-            <header className="flex items-center justify-between text-xs text-slate-500">
-              <span className="font-semibold text-slate-700">{message.author}</span>
-              <span>{formatDateTime(message.timestamp)}</span>
-            </header>
-            <p className="text-sm text-slate-700">{message.message}</p>
-          </article>
-        ))}
-        {history.length === 0 ? (
-          <p className="text-xs text-slate-500">Диалогов пока нет.</p>
-        ) : null}
-      </div>
-      <label className="space-y-2">
-        <span className="text-xs text-slate-500">Комментарий для модели</span>
+    <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
+      <header className="flex items-center justify-between">
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-500">
+          Шаг {step.orderIndex}
+        </span>
+        <span className="text-[11px] text-slate-400">
+          Обновлён {step.updatedAt ? formatDateTime(step.updatedAt) : formatDateTime(step.createdAt)}
+        </span>
+      </header>
+      <label className="flex flex-col gap-1 text-xs text-slate-500">
+        <span>Действие</span>
         <textarea
-          value={draft}
-          onChange={(event) => onDraftChange(event.target.value)}
-          placeholder="Опишите правки или причину перегенерации..."
-          className="w-full rounded-xl border border-slate-200 bg-white p-2 text-sm text-slate-700 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
+          value={step.action}
+          onChange={(event) => onChange(step.id, "action", event.target.value)}
+          rows={4}
+          className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:border-slate-500"
         />
       </label>
-    </section>
+      <label className="flex flex-col gap-1 text-xs text-slate-500">
+        <span>Ожидаемый результат</span>
+        <textarea
+          value={step.expectedResult ?? ""}
+          onChange={(event) => onChange(step.id, "expectedResult", event.target.value)}
+          rows={3}
+          className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:border-slate-500"
+        />
+      </label>
+      <label className="flex flex-col gap-1 text-xs text-slate-500">
+        <span>Дополнительно</span>
+        <textarea
+          value={step.notes ?? ""}
+          onChange={(event) => onChange(step.id, "notes", event.target.value)}
+          rows={3}
+          className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:border-slate-500"
+        />
+      </label>
+    </div>
   );
+}
+
+function ContextPreview({ context }: { context: Record<string, unknown> | null }) {
+  if (!context || Object.keys(context).length === 0) {
+    return <p className="text-xs text-slate-500">Контекст ещё не задан. Можно добавить заметки перед перегенерацией.</p>;
+  }
+
+  const items = Object.entries(context)
+    .filter(([, value]) => Array.isArray(value) && value.length > 0)
+    .map(([key, value]) => ({ key, value: value as string[] }));
+
+  if (items.length === 0) {
+    return <p className="text-xs text-slate-500">Контекст пустой. Добавьте заметки перед перегенерацией.</p>;
+  }
+
+  return (
+    <div className="space-y-3 text-xs text-slate-600">
+      {items.map((item) => (
+        <div key={item.key} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <p className="text-[11px] uppercase tracking-wide text-slate-500">{humanizeKey(item.key)}</p>
+          <ul className="mt-2 space-y-1">
+            {item.value.map((entry, index) => (
+              <li key={`${item.key}-${index}`} className="rounded bg-white px-2 py-1 text-slate-700">
+                {entry}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function humanizeKey(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function toContextBundle(testCase: TestCase, note: string): ContextBundle {
+  const source = testCase.requirementContext ?? {};
+
+  const asArray = (value: unknown): string[] => (Array.isArray(value) ? (value.filter((item) => typeof item === "string") as string[]) : []);
+
+  const bundle: ContextBundle = {
+    functionalRequirements: asArray(source["functional_requirements"]),
+    functionalScenarios: asArray(source["functional_scenarios"]),
+    userScenarios: asArray(source["user_scenarios"]),
+    productSpecs: asArray(source["product_specs"]),
+    acceptanceCriteria: asArray(source["acceptance_criteria"]),
+    technicalConstraints: asArray(source["technical_constraints"]),
+    urls: asArray(source["urls"]),
+    rawContext: asArray(source["raw_context"]),
+  };
+
+  if (note.trim()) {
+    bundle.rawContext = [...(bundle.rawContext ?? []), note.trim()];
+  }
+
+  return bundle;
 }

@@ -29,6 +29,16 @@ const statusConfig: Record<
     classes: "bg-slate-100 text-slate-600 border border-slate-200",
     dot: "bg-slate-400",
   },
+  active: {
+    label: "Активен",
+    classes: "bg-emerald-100 text-emerald-700 border border-emerald-200",
+    dot: "bg-emerald-500",
+  },
+  archived: {
+    label: "Архив",
+    classes: "bg-slate-300 text-slate-600 border border-slate-300",
+    dot: "bg-slate-500",
+  },
 };
 
 export function StatusPill({ status }: { status: string }) {

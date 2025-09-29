@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional, Sequence
 
-from sqlalchemy import asc, func, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from ..db.models import (
@@ -87,7 +87,7 @@ class TestCaseRepository:
         return self.session.execute(stmt).scalar_one_or_none()
 
     def list(self, *, skip: int = 0, limit: int = 50) -> tuple[List[TestCase], int]:
-        stmt = select(TestCase).order_by(asc(TestCase.created_at)).offset(skip).limit(limit)
+        stmt = select(TestCase).order_by(desc(TestCase.created_at)).offset(skip).limit(limit)
         items = self.session.execute(stmt).scalars().all()
         total = self.session.execute(select(func.count(TestCase.id))).scalar_one()
         return items, total

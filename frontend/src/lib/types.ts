@@ -1,111 +1,86 @@
-export type GenerationStatus = "pending" | "in-progress" | "completed" | "failed";
-export type StepStatus = "ready" | "edited" | "pending";
-export type ChatRole = "system" | "assistant" | "user";
-export type ExportChannel = "Adaptavist" | "Zephyr" | "Excel";
-export type ExportStatus = "ok" | "warning" | "error";
-
-export type TestCaseSummary = {
-  id: string;
-  generationId: string;
-  reference: string;
-  title: string;
-  status: GenerationStatus;
-  coverage: number;
-  project: string;
-  modelName: string;
-  autoReruns: number;
-  regenerationCount: number;
-  generatedAt: string;
-};
-
-export type GenerationSummary = {
-  id: string;
-  reference: string;
-  title: string;
-  project: string;
-  modelName: string;
-  status: GenerationStatus;
-  createdAt: string;
-  autoRerunEnabled: boolean;
-  autoReruns: number;
-  coverageTarget: number;
-  guardrails: Record<string, boolean>;
-  testTypes: string[];
-  lastError: string | null;
-  cases: TestCaseSummary[];
-};
-
-export type RequirementCoverage = {
-  id: string;
-  title: string;
-  coverage: number;
-};
+export type TestCaseStatus = "draft" | "active" | "archived";
 
 export type TestCaseStep = {
   id: string;
-  position: number;
+  orderIndex: number;
   action: string;
-  data: string;
-  expected: string;
-  ruleHits: string[];
-  status: StepStatus;
-};
-
-export type ChatMessage = {
-  id: string;
-  author: string;
-  role: ChatRole;
-  message: string;
-  timestamp: string;
-};
-
-export type ExportRecord = {
-  id: string;
-  channel: ExportChannel;
-  status: ExportStatus;
-  details: string | null;
+  expectedResult: string | null;
+  notes: string | null;
   createdAt: string;
-  location: string | null;
+  updatedAt: string | null;
 };
 
-export type TestCaseDetail = TestCaseSummary & {
-  requirementCoverage: RequirementCoverage[];
-  metadata: Record<string, unknown>;
-  tags: string[];
-  steps: TestCaseStep[];
-  chatMessages: ChatMessage[];
-  exports: ExportRecord[];
-};
-
-export type Datapool = {
+export type TestCaseRevision = {
   id: string;
-  originalFilename: string;
-  description: string | null;
-  contentType: string | null;
-  sizeBytes: number;
-  uploadedAt: string;
+  version: number;
+  summary: string | null;
+  changes: Record<string, unknown>;
+  createdAt: string;
 };
 
-export type GenerationCreatePayload = {
+export type TestCase = {
+  id: string;
+  number: string;
   title: string;
-  project: string;
-  modelName: string;
-  datapoolId?: string | null;
-  description?: string | null;
-  testTypes: string[];
-  guardrails: Record<string, boolean>;
-  autoRerun: boolean;
-  coverageTarget?: number | null;
-  tags?: string[];
+  summary: string | null;
+  author: string | null;
+  precondition: string | null;
+  postcondition: string | null;
+  status: TestCaseStatus;
+  requirementContext: Record<string, unknown> | null;
+  sourceUrls: string[];
+  version: number;
+  latestGenerationSummary: string | null;
+  steps: TestCaseStep[];
+  revisions: TestCaseRevision[];
+  createdAt: string;
+  updatedAt: string | null;
 };
 
-export type StepUpdate = Partial<Pick<TestCaseStep, "action" | "data" | "expected" | "status">> & {
+export type TestCaseList = {
+  items: TestCase[];
+  total: number;
+};
+
+export type DocumentUpload = {
   id: string;
+  name: string;
+  mimeType: string | null;
+  path: string;
+  text: string | null;
 };
 
-export type ExportRequestPayload = {
-  channel: ExportChannel;
-  includeDatapool?: boolean;
-  notes?: string;
-  fileName?: string;
+export type ContextBundle = {
+  functionalRequirements?: string[];
+  functionalScenarios?: string[];
+  userScenarios?: string[];
+  productSpecs?: string[];
+  acceptanceCriteria?: string[];
+  technicalConstraints?: string[];
+  urls?: string[];
+  rawContext?: string[];
+};
+
+export type DocumentReference = {
+  name: string;
+  sourceType?: "upload" | "url" | "manual";
+  text?: string | null;
+  url?: string | null;
+  fileId?: string | null;
+  mimeType?: string | null;
+};
+
+export type GenerateTestCasePayload = {
+  requestedTitle?: string | null;
+  objective?: string | null;
+  author?: string | null;
+  context: ContextBundle;
+  documents: DocumentReference[];
+};
+
+export type StepPatchPayload = {
+  action?: string;
+  expectedResult?: string | null;
+  notes?: string | null;
+  orderIndex?: number;
 };
